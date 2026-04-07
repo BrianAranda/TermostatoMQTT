@@ -18,7 +18,7 @@ from mqtt_local import config
 import uasyncio as asyncio
 import dht, machine
 
-d = dht.DHT22(machine.Pin(13))
+d = dht.DHT22(machine.Pin(15))
 
 def sub_cb(topic, msg, retained):
     print('Topic = {} -> Valor = {}'.format(topic.decode(), msg.decode()))
