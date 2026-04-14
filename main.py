@@ -1,12 +1,12 @@
 from mqtt_as import MQTTClient
 from mqtt_local import config
 import uasyncio as asyncio
-import dht, machine, ujson
+import dht, machine, ujson, binascii
 
 sensor = dht.DHT22(machine.Pin(15))
-# led = machine.Pin(6, machine.Pin.OUT)
 led = machine.Pin("LED", machine.Pin.OUT)
-rele = machine.Pin(9, machine.Pin.OUT, value=1)
+rele = machine.Pin(16, machine.Pin.OUT, value=1)
+id_disp = binascii.hexlify(machine.unique_id()).decode()
 
 estado = {
     "setpoint": 25.0,
@@ -18,8 +18,7 @@ estado = {
 # Guarda los parámetros persistentes en la memoria flash como JSON
 def guardar_estado():
     try:
-        # Filtramos solo lo que nos interesa guardar. 
-        # Esto evita escribir 'temp_actual' en la memoria flash
+        # Filtramos solo lo que queremos guardar
         persistente = {
             "setpoint": estado["setpoint"],
             "periodo": estado["periodo"],
@@ -47,16 +46,13 @@ def cargar_estado():
         print("Archivo de estado no encontrado. Creando uno nuevo...")
         guardar_estado()
 
-# Llamamos a cargar_estado() al momento de correr el script
-cargar_estado()
-
-# Hace parpadear el LED durante un tiempo determinado sin detener el resto del programa
-async def destellar(segundos=3):
-    fin = asyncio.get_event_loop().time() + segundos
-    while asyncio.get_event_loop().time() < fin:
-        led.value(not led.value()) # Conmuta el estado
-        await asyncio.sleep(0.2)
-    led.value(0) # Asegurar que quede apagado
+# Hace parpadear el LED durante un tiempo determinado
+async def destellar():
+    print("Ejecutando destello...")
+    for _ in range(10): # Cinco destellos: 5 veces apagado, 5 encendido
+        led.toggle() # Toglea el estado de la salida
+        await asyncio.sleep_ms(500) # 500 ms o sea 5 segundos
+    led.off() # Apaga al salir
 
 # Mide sensores y publica el estado completo en formato JSON
 async def medir_y_publicar(client):
@@ -79,7 +75,7 @@ async def medir_y_publicar(client):
             }
             
             print("Publicando:", payload)
-            await client.publish("BrianArandaa", ujson.dumps(payload), qos=1)
+            await client.publish(id_disp, ujson.dumps(payload), qos=1)
             
         except OSError:
             print("Error al leer el sensor DHT22")
@@ -90,28 +86,32 @@ async def medir_y_publicar(client):
 # Alternativa basada en eventos para procesar mensajes entrantes
 async def escuchar_mensajes(client):
     # En mqtt_as, client.queue es un iterador asíncrono de mensajes
+    print("Iniciando tarea de escucha de mensajes ...")
     async for topic, msg, retained in client.queue:
-        t = topic.decode()
-        m = msg.decode()
-        print(f"Mensaje recibido en {t}: {m}")
-        
-        # Lógica para actualizar parámetros
-        if "setpoint" in t:
-            estado["setpoint"] = float(m)
-            guardar_estado()
-        elif "periodo" in t:
-            estado["periodo"] = int(m)
-            guardar_estado()
-        elif "modo" in t:
-            estado["modo"] = m # "automatico" o "manual"
-            guardar_estado()
-        elif "destello" in t:
-            # Lanzamos la tarea de destello sin esperar a que termine (non-blocking)
-            asyncio.create_task(destellar())
-        elif "rele" in t and estado["modo"] == "manual":
-            estado["rele"] = int(m)
-            guardar_estado()
-            # El cambio físico del relé se encarga la Tarea de Control
+        try:
+            t = topic.decode()
+            m = msg.decode()
+            print(f"Mensaje recibido en {t}: {m}")
+            
+            # Lógica para actualizar parámetros
+            if "setpoint" in t:
+                estado["setpoint"] = float(m)
+                guardar_estado()
+            elif "periodo" in t:
+                estado["periodo"] = int(m)
+                guardar_estado()
+            elif "modo" in t:
+                estado["modo"] = m # "automatico" o "manual"
+                guardar_estado()
+            elif "destello" in t:
+                # Lanzamos la tarea de destello sin esperar a que termine (non-blocking)
+                asyncio.create_task(destellar())
+            elif "rele" in t and estado["modo"] == "manual":
+                estado["rele"] = int(m)
+                guardar_estado()
+                # El cambio físico del relé se encarga la Tarea de Control
+        except Exception as e:
+            print(f"Error procesando el mensaje: {e}")
 
 # Evalúa constantemente el estado y actúa sobre el pin físico del relé
 async def control_termostato():
@@ -141,14 +141,32 @@ async def control_termostato():
         
         # Evaluar cada 1 
         await asyncio.sleep(1)
+    
+async def conexion(client):
+    # QoS 1 asegura que el mensaje se entregue al menos una vez
+    print("Comenzando suscripciones...")
+    topicos = ["/setpoint", "/periodo", "/destello", "/modo", "/rele"]
+    while True:
+        await client.up.wait()
+        client.up.clear()
+        for sub in topicos:
+            await client.subscribe(id_disp + sub, qos=1)
+            print(f"Suscripción confirmada a: {id_disp + sub}")
 
 # Punto de entrada de las rutinas asíncronas
 async def main(client):
     print("Conectando al WiFi y al Broker MQTT...")
-    await client.connect()
+    try:
+        await client.connect()
+        print(f"Conexión al broker MQTT establecida. ID: {id_disp}")
+    except Exception as e:
+        print(f"Error en la conexión: {e}")
+        return
+    await asyncio.sleep(2)
     print("¡Conectado exitosamente!")
     
     # create_task() las pone en la fila de ejecución
+    asyncio.create_task(conexion(client))
     asyncio.create_task(medir_y_publicar(client))
     asyncio.create_task(escuchar_mensajes(client))
     asyncio.create_task(control_termostato())
@@ -156,24 +174,15 @@ async def main(client):
     while True:
         await asyncio.sleep(60)
 
-async def wifi_han(state):
-    print('Wifi is ', 'up' if state else 'down')
-    await asyncio.sleep(2)
-
-async def conn_han(client):
-    # QoS 1 asegura que el mensaje se entregue al menos una vez
-    await client.subscribe(f"BrianArandaa/setpoint", 1)
-    await client.subscribe(f"BrianArandaa/periodo", 1)
-    await client.subscribe(f"BrianArandaa/destello", 1)
-    await client.subscribe(f"BrianArandaa/modo", 1)
-    await client.subscribe(f"BrianArandaa/rele", 1)
-
 # Define configuration
 # config['subs_cb'] = sub_cb
-config['connect_coro'] = conn_han
-config['wifi_coro'] = wifi_han
+# config['connect_coro'] = conn_han
+# config['wifi_coro'] = wifi_han
 config['ssl'] = True
 config['queue_len'] = 1
+
+# Llamamos a cargar_estado() al momento de correr el script
+cargar_estado()
 
 # Set up client
 MQTTClient.DEBUG = True  # Optional
