@@ -12,11 +12,11 @@ estado = {
     "setpoint": 25.0,
     "periodo": 10,       # Segundos entre publicaciones
     "modo": "manual",    # "manual" o "automatico"
-    "rele": 0            # 0 = apagado, 1 = encendido (Estado lógico, no eléctrico)
+    "rele": 0            # 0 = apagado, 1 = encendido (estado lógico, no eléctrico)
 }
 
+# Guarda los parámetros persistentes en la memoria flash como JSON
 def guardar_estado():
-    """Guarda los parámetros persistentes en la memoria flash como JSON."""
     try:
         # Filtramos solo lo que nos interesa guardar. 
         # Esto evita escribir 'temp_actual' en la memoria flash
@@ -32,8 +32,8 @@ def guardar_estado():
     except Exception as e:
         print("Error guardando estado:", e)
 
+# Carga los datos del archivo JSON a la RAM al iniciar
 def cargar_estado():
-    """Carga los datos del archivo JSON a la RAM al iniciar."""
     global estado # Aseguramos que modificamos el diccionario global
     try:
         # Abrimos en modo lectura de texto ("r")
@@ -50,16 +50,16 @@ def cargar_estado():
 # Llamamos a cargar_estado() al momento de correr el script
 cargar_estado()
 
+# Hace parpadear el LED durante un tiempo determinado sin detener el resto del programa
 async def destellar(segundos=3):
-    """Hace parpadear el LED durante un tiempo determinado sin detener el resto del programa."""
     fin = asyncio.get_event_loop().time() + segundos
     while asyncio.get_event_loop().time() < fin:
         led.value(not led.value()) # Conmuta el estado
         await asyncio.sleep(0.2)
     led.value(0) # Asegurar que quede apagado
 
+# Mide sensores y publica el estado completo en formato JSON
 async def medir_y_publicar(client):
-    """Mide sensores y publica el estado completo en formato JSON."""
     while True:
         try:
             sensor.measure()
@@ -87,8 +87,8 @@ async def medir_y_publicar(client):
         # Esperamos el tiempo definido en el periodo (dinámico)
         await asyncio.sleep(estado["periodo"])
 
+# Alternativa basada en eventos para procesar mensajes entrantes
 async def escuchar_mensajes(client):
-    """Alternativa basada en eventos para procesar mensajes entrantes."""
     # En mqtt_as, client.queue es un iterador asíncrono de mensajes
     async for topic, msg, retained in client.queue:
         t = topic.decode()
@@ -113,8 +113,8 @@ async def escuchar_mensajes(client):
             guardar_estado()
             # El cambio físico del relé se encarga la Tarea de Control
 
+# Evalúa constantemente el estado y actúa sobre el pin físico del relé
 async def control_termostato():
-    """Evalúa constantemente el estado y actúa sobre el pin físico del relé."""
     while True:
         modo = estado["modo"]
         
@@ -142,8 +142,8 @@ async def control_termostato():
         # Evaluar cada 1 
         await asyncio.sleep(1)
 
+# Punto de entrada de las rutinas asíncronas
 async def main(client):
-    """Punto de entrada de las rutinas asíncronas."""
     print("Conectando al WiFi y al Broker MQTT...")
     await client.connect()
     print("¡Conectado exitosamente!")
